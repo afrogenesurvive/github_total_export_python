@@ -10,6 +10,7 @@ A Python script to create a full backup of all repositories (including metadata)
 - **Metadata backup** — exports issues, pull requests, and releases as readable JSON files.
 - **Wiki support** — optionally backs up repository wikis (if they exist).
 - **Incremental** — re-run the script and existing mirror directories are updated with `git remote update --prune`.
+- **Selective backup** — back up all repos, or only the ones listed in a `config.json`.
 - **Pagination safe** — automatically fetches all pages from the GitHub API.
 - **Manifest file** — a `manifest.json` is generated listing every backed-up repo and its location.
 
@@ -45,35 +46,89 @@ No external Python packages are required — the script uses only the standard l
 
 ## Usage
 
-### Basic backup (public repos owned by a user)
+The script reads your settings from the environment or an optional `.env` file. A `.env` file lets you store the token and username once instead of prefixing every command.
+
+### Set up `.env` (recommended)
 
 ```bash
-GITHUB_TOKEN=ghp_your_token_here python github_backup.py --user octocat --out /path/to/backup
+# Copy the template and fill in your settings
+cp .env.example .env
+# Then edit .env and set:
+#   GITHUB_TOKEN=your_token_here
+#   GITHUB_USER=your_username_or_org
+```
+
+`.env` is git-ignored, so your token won't be committed. If both are present, an already-set environment variable (e.g. `GITHUB_TOKEN` or `GITHUB_USER`) takes precedence over `.env`.
+
+### Basic backup (public repos owned by a user)
+
+With `GITHUB_USER` set in `.env`, just specify the output directory:
+
+```bash
+python github_backup.py --out /path/to/backup
+```
+
+Or override the user on the command line:
+
+```bash
+python github_backup.py --user octocat --out /path/to/backup
 ```
 
 ### Include wikis
 
 ```bash
-GITHUB_TOKEN=ghp_your_token_here python github_backup.py --user octocat --out /path/to/backup --include-wikis
+python github_backup.py --out /path/to/backup --include-wikis
 ```
 
 ### Backup an organisation's repos
 
 ```bash
-GITHUB_TOKEN=ghp_your_token_here python github_backup.py --user my-org --out /path/to/backup
+python github_backup.py --out /path/to/backup   # with GITHUB_USER=my-org in .env
+# or
+python github_backup.py --user my-org --out /path/to/backup
 ```
+
+> Alternatively, you can still pass the token inline without a `.env` file: `GITHUB_TOKEN=ghp_your_token_here python github_backup.py ...`
+
+### Back up only selected repos
+
+Repo selection is controlled by a JSON config file. By default the script looks for `config.json` in the current directory (or next to the script); pass `--config PATH` to use a different file.
+
+An empty `repos` list (or no `config.json` at all) backs up **all** owned repos:
+
+```json
+{
+  "repos": []
+}
+```
+
+List specific repository names to back up **only** those:
+
+```json
+{
+  "repos": ["repo-a", "repo-b"]
+}
+```
+
+Names that don't match any owned repo are skipped with a warning. If the config file is missing, the script backs up all repos.
 
 ---
 
 ## Arguments
 
-| Argument          | Required | Description                                          |
-| ----------------- | -------- | ---------------------------------------------------- |
-| `--user`          | Yes      | GitHub username or organisation name to back up      |
-| `--out`           | Yes      | Destination directory for the backup                 |
-| `--include-wikis` | No       | Also clone wikis for each repository (if they exist) |
+| Argument          | Required | Description                                                       |
+| ----------------- | -------- | ----------------------------------------------------------------- |
+| `--user`          | No       | GitHub username/org (defaults to `GITHUB_USER` from `.env`)       |
+| `--out`           | Yes      | Destination directory for the backup                              |
+| `--config`        | No       | Path to a JSON config file (defaults to `config.json` if present) |
+| `--include-wikis` | No       | Also clone wikis for each repository (if they exist)              |
 
-The token is passed through the environment variable `GITHUB_TOKEN`.
+Settings are read from the environment or an optional `.env` file:
+
+- `GITHUB_TOKEN` — GitHub personal access token (required)
+- `GITHUB_USER` — GitHub username or organisation to back up (used unless `--user` is passed)
+
+Repo selection comes from the config JSON file: `{"repos": ["name1", "name2"]}` backs up only those repos; an empty or missing list backs up all.
 
 ---
 

@@ -2,7 +2,16 @@
 """Backup all repos for a single GitHub user/org.
 
 Usage:
-  GITHUB_TOKEN=... python github_backup.py --user USER --out /path/to/backup [--include-wikis]
+  python github_backup.py --out /path/to/backup [--user USER] [--config PATH] [--include-wikis]
+
+Settings are read from an optional .env file (KEY=VALUE format) in the current
+working directory or next to this script, or from the process environment:
+  GITHUB_TOKEN   GitHub personal access token (required)
+  GITHUB_USER    GitHub username or org (used unless --user is passed)
+
+Repo selection is controlled by a JSON config file (see --config / config.json):
+  {"repos": ["repo-a", "repo-b"]}   back up only these repos
+  {"repos": []} or no config file   back up all owned repos
 """
 
 from __future__ import annotations
@@ -22,8 +31,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Backup GitHub repos and metadata")
-    parser.add_argument("--user", required=True, help="GitHub username or org")
+    parser.add_argument("--user", help="GitHub username or org (defaults to GITHUB_USER from .env)")
     parser.add_argument("--out", required=True, help="Backup destination directory")
+    parser.add_argument("--config", help="Path to a JSON config file (default: config.json if present)")
     parser.add_argument("--include-wikis", action="store_true", help="Clone repo wikis if they exist")
     return parser.parse_args()
 
@@ -90,16 +100,86 @@ def write_json(path: str, data: Any) -> None:
         json.dump(data, f, indent=2, sort_keys=True)
 
 
+def load_dotenv(path: Optional[str] = None) -> None:
+    """Load KEY=VALUE pairs from a .env file into the environment (stdlib only).
+
+    Existing environment variables are never overwritten, so an explicitly set
+    GITHUB_TOKEN still wins. Values wrapped in matching single/double quotes
+    have the quotes stripped. Blank lines and lines starting with '#' are
+    ignored.
+
+    If no path is given, looks for '.env' in the current working directory and
+    then next to this script.
+    """
+    if path is None:
+        candidates = [os.path.join(os.getcwd(), ".env")]
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        if os.path.abspath(script_dir) != os.path.abspath(os.getcwd()):
+            candidates.append(os.path.join(script_dir, ".env"))
+        path = next((c for c in candidates if os.path.isfile(c)), None)
+    if not path or not os.path.isfile(path):
+        return
+
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            key, sep, value = line.partition("=")
+            if not sep:
+                continue
+            key = key.strip()
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+                value = value[1:-1]
+            if key and key not in os.environ:
+                os.environ[key] = value
+
+
+def load_config(path: Optional[str] = None) -> Dict[str, Any]:
+    """Load backup options from a JSON config file.
+
+    Supported keys:
+      repos: list of repository names to back up. If empty or absent, all
+             repos owned by the user are backed up.
+
+    If no path is given, looks for 'config.json' in the current working
+    directory and then next to this script. Returns {} if the file is absent.
+    """
+    if path is None:
+        candidates = [os.path.join(os.getcwd(), "config.json")]
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        if os.path.abspath(script_dir) != os.path.abspath(os.getcwd()):
+            candidates.append(os.path.join(script_dir, "config.json"))
+        path = next((c for c in candidates if os.path.isfile(c)), None)
+    if not path or not os.path.isfile(path):
+        return {}
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
 def main() -> int:
     args = parse_args()
+    load_dotenv()
     token = os.environ.get("GITHUB_TOKEN")
     if not token:
         print("Missing GITHUB_TOKEN in environment.", file=sys.stderr)
         return 1
 
+    user = args.user or os.environ.get("GITHUB_USER")
+    if not user:
+        print("Missing user. Pass --user or set GITHUB_USER in .env.", file=sys.stderr)
+        return 1
+
+    config = load_config(args.config)
+    selected = config.get("repos") or []
+    if not isinstance(selected, list):
+        print("Config key 'repos' must be a list of repository names.", file=sys.stderr)
+        return 1
+
     timestamp = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
     base_out = os.path.abspath(os.path.expanduser(args.out))
-    backup_root = os.path.join(base_out, f"github_backup_{args.user}_{timestamp}")
+    backup_root = os.path.join(base_out, f"github_backup_{user}_{timestamp}")
     repos_dir = os.path.join(backup_root, "repos")
     meta_dir = os.path.join(backup_root, "metadata")
     os.makedirs(repos_dir, exist_ok=True)
@@ -107,10 +187,18 @@ def main() -> int:
 
     # Pull all repos visible to the token and filter to the requested owner.
     repos = api_get_all("https://api.github.com/user/repos?per_page=100&affiliation=owner", token)
-    owned_repos = [r for r in repos if r.get("owner", {}).get("login", "").lower() == args.user.lower()]
+    owned_repos = [r for r in repos if r.get("owner", {}).get("login", "").lower() == user.lower()]
+
+    # Restrict to the repos listed in the config file, if any.
+    if selected:
+        selected_set = set(selected)
+        owned_repos = [r for r in owned_repos if r["name"] in selected_set]
+        missing = sorted(selected_set - {r["name"] for r in owned_repos})
+        if missing:
+            print(f"Warning: no repo(s) found matching: {', '.join(missing)}", file=sys.stderr)
 
     manifest = {
-        "user": args.user,
+        "user": user,
         "timestamp_utc": timestamp,
         "repo_count": len(owned_repos),
         "repos": [],
