@@ -56,6 +56,7 @@ cp .env.example .env
 # Then edit .env and set:
 #   GITHUB_TOKEN=your_token_here
 #   GITHUB_USER=your_username_or_org
+#   GITHUB_REPOS=repo-a,repo-b      # optional; empty = back up all
 ```
 
 `.env` is git-ignored, so your token won't be committed. If both are present, an already-set environment variable (e.g. `GITHUB_TOKEN` or `GITHUB_USER`) takes precedence over `.env`.
@@ -65,44 +66,42 @@ cp .env.example .env
 With `GITHUB_USER` set in `.env`, just specify the output directory:
 
 ```bash
-python github_backup.py --out /path/to/backup
+python3 github_backup.py --out /path/to/backup
 ```
 
 Or override the user on the command line:
 
 ```bash
-python github_backup.py --user octocat --out /path/to/backup
+python3 github_backup.py --user octocat --out /path/to/backup
 ```
 
 ### Include wikis
 
 ```bash
-python github_backup.py --out /path/to/backup --include-wikis
+python3 github_backup.py --out /path/to/backup --include-wikis
 ```
 
 ### Backup an organisation's repos
 
 ```bash
-python github_backup.py --out /path/to/backup   # with GITHUB_USER=my-org in .env
+python3 github_backup.py --out /path/to/backup   # with GITHUB_USER=my-org in .env
 # or
-python github_backup.py --user my-org --out /path/to/backup
+python3 github_backup.py --user my-org --out /path/to/backup
 ```
 
-> Alternatively, you can still pass the token inline without a `.env` file: `GITHUB_TOKEN=ghp_your_token_here python github_backup.py ...`
+> Alternatively, you can still pass the token inline without a `.env` file: `GITHUB_TOKEN=ghp_your_token_here python3 github_backup.py ...`
 
 ### Back up only selected repos
 
-Repo selection is controlled by a JSON config file. By default the script looks for `config.json` in the current directory (or next to the script); pass `--config PATH` to use a different file.
+Repo selection is controlled by the `GITHUB_REPOS` variable in `.env` — a comma-separated list. If it's set, **only** those repos are backed up:
 
-An empty `repos` list (or no `config.json` at all) backs up **all** owned repos:
-
-```json
-{
-  "repos": []
-}
+```
+GITHUB_REPOS=repo-a,repo-b
 ```
 
-List specific repository names to back up **only** those:
+An empty `GITHUB_REPOS` backs up **all** owned repos.
+
+Selection can also come from a JSON config file (default `config.json`, or `--config PATH`):
 
 ```json
 {
@@ -110,7 +109,7 @@ List specific repository names to back up **only** those:
 }
 ```
 
-Names that don't match any owned repo are skipped with a warning. If the config file is missing, the script backs up all repos.
+`GITHUB_REPOS` takes precedence over the config file. An empty `repos` list (or no config file) backs up all. Names that don't match any owned repo are skipped with a warning.
 
 ---
 
@@ -127,8 +126,9 @@ Settings are read from the environment or an optional `.env` file:
 
 - `GITHUB_TOKEN` — GitHub personal access token (required)
 - `GITHUB_USER` — GitHub username or organisation to back up (used unless `--user` is passed)
+- `GITHUB_REPOS` — comma-separated list of repos to back up (empty = all)
 
-Repo selection comes from the config JSON file: `{"repos": ["name1", "name2"]}` backs up only those repos; an empty or missing list backs up all.
+Repo selection comes from `GITHUB_REPOS`, or from the config JSON file (`{"repos": ["name1", "name2"]}`); `GITHUB_REPOS` wins if both are set.
 
 ---
 

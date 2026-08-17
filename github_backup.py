@@ -2,16 +2,17 @@
 """Backup all repos for a single GitHub user/org.
 
 Usage:
-  python github_backup.py --out /path/to/backup [--user USER] [--config PATH] [--include-wikis]
+  python3 github_backup.py --out /path/to/backup [--user USER] [--config PATH] [--include-wikis]
 
 Settings are read from an optional .env file (KEY=VALUE format) in the current
 working directory or next to this script, or from the process environment:
   GITHUB_TOKEN   GitHub personal access token (required)
   GITHUB_USER    GitHub username or org (used unless --user is passed)
 
-Repo selection is controlled by a JSON config file (see --config / config.json):
-  {"repos": ["repo-a", "repo-b"]}   back up only these repos
-  {"repos": []} or no config file   back up all owned repos
+Repo selection comes from the GITHUB_REPOS environment variable (comma-separated,
+loaded from .env), or from a JSON config file (see --config / config.json):
+  GITHUB_REPOS=repo-a,repo-b          back up only these repos
+  empty GITHUB_REPOS / {"repos": []}  back up all owned repos
 """
 
 from __future__ import annotations
@@ -176,6 +177,11 @@ def main() -> int:
     if not isinstance(selected, list):
         print("Config key 'repos' must be a list of repository names.", file=sys.stderr)
         return 1
+
+    # GITHUB_REPOS (comma-separated, loaded from .env) overrides config.json.
+    env_repos = os.environ.get("GITHUB_REPOS")
+    if env_repos and env_repos.strip():
+        selected = [r.strip() for r in env_repos.split(",") if r.strip()]
 
     timestamp = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
     base_out = os.path.abspath(os.path.expanduser(args.out))
