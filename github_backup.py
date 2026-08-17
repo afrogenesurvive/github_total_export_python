@@ -8,22 +8,30 @@ Settings are read from an optional .env file (KEY=VALUE format) in the current
 working directory or next to this script, or from the process environment:
   GITHUB_TOKEN   GitHub personal access token (required)
   GITHUB_USER    GitHub username or org (used unless --user is passed)
+  GITHUB_LFS     Set to true to also fetch Git LFS objects (requires git-lfs)
 
 Repo selection comes from the GITHUB_REPOS environment variable (comma-separated,
 loaded from .env), or from a JSON config file (see --config / config.json):
   GITHUB_REPOS=repo-a,repo-b          back up only these repos
   empty GITHUB_REPOS / {"repos": []}  back up all owned repos
+
+By default a readable working-copy snapshot of each repo's default branch is
+exported with dependency dirs (node_modules, .venv, etc.) excluded:
+  SNAPSHOT=true (default)   export the code snapshot
+  EXCLUDE_DIRS=...          comma-separated dirs to skip (defaults if unset)
 """
 
 from __future__ import annotations
 
 import argparse
 import datetime as dt
+import io
 import json
 import os
 import re
 import subprocess
 import sys
+import tarfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -75,11 +83,83 @@ def run(cmd: List[str]) -> None:
     subprocess.run(cmd, check=True)
 
 
-def repo_mirror(repo_clone_url: str, mirror_path: str) -> None:
+def is_truthy(value: Optional[str]) -> bool:
+    """Return True for common truthy values: 1/true/yes/on (case-insensitive)."""
+    return (value or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def git_lfs_available() -> bool:
+    """Return True if the git-lfs extension is installed and usable."""
+    try:
+        subprocess.run(
+            ["git", "lfs", "version"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+
+def fetch_lfs_objects(mirror_path: str) -> None:
+    """Fetch all Git LFS objects for a mirror. Requires git-lfs to be installed."""
+    try:
+        run(["git", "-C", mirror_path, "lfs", "fetch", "--all"])
+    except subprocess.CalledProcessError:
+        print(
+            f"Warning: LFS fetch failed for {mirror_path}.",
+            file=sys.stderr,
+        )
+
+
+def repo_mirror(repo_clone_url: str, mirror_path: str, fetch_lfs: bool = False) -> None:
     if os.path.isdir(mirror_path):
         run(["git", "-C", mirror_path, "remote", "update", "--prune"])
+    else:
+        run(["git", "clone", "--mirror", repo_clone_url, mirror_path])
+    if fetch_lfs:
+        fetch_lfs_objects(mirror_path)
+
+
+DEFAULT_EXCLUDES = [
+    "node_modules", ".venv", "venv", "env", "site-packages", "__pycache__",
+    "dist", "build", ".next", ".astro", "out", "target", "vendor", ".cache",
+]
+
+
+def parse_excludes(raw: Optional[str]) -> List[str]:
+    """Parse the EXCLUDE_DIRS env var into a list of directory names.
+
+    Unset -> the DEFAULT_EXCLUDES list. Set (even empty) -> exactly what's given.
+    """
+    if raw is None:
+        return list(DEFAULT_EXCLUDES)
+    return [d.strip() for d in raw.split(",") if d.strip()]
+
+
+def snapshot_repo(mirror_path: str, dest: str, excludes: List[str]) -> None:
+    """Export a mirror's default branch as readable files, skipping excluded dirs."""
+    os.makedirs(dest, exist_ok=True)
+    try:
+        proc = subprocess.run(
+            ["git", "-C", mirror_path, "archive", "--format=tar", "HEAD"],
+            check=True,
+            stdout=subprocess.PIPE,
+        )
+    except subprocess.CalledProcessError:
+        print(f"Warning: could not snapshot {mirror_path} (empty repo?).", file=sys.stderr)
         return
-    run(["git", "clone", "--mirror", repo_clone_url, mirror_path])
+    exclude_set = set(excludes)
+    with tarfile.open(fileobj=io.BytesIO(proc.stdout), mode="r:") as tar:
+        for member in tar.getmembers():
+            top = member.name.split("/", 1)[0]
+            if top in exclude_set:
+                continue
+            try:
+                tar.extract(member, path=dest, filter="data")
+            except TypeError:  # Python < 3.12
+                tar.extract(member, path=dest)
 
 
 def clone_wiki(repo_clone_url: str, wiki_path: str) -> None:
@@ -183,13 +263,29 @@ def main() -> int:
     if env_repos and env_repos.strip():
         selected = [r.strip() for r in env_repos.split(",") if r.strip()]
 
+    # Fetch Git LFS objects if enabled via GITHUB_LFS.
+    fetch_lfs = is_truthy(os.environ.get("GITHUB_LFS"))
+    if fetch_lfs and not git_lfs_available():
+        print(
+            "Warning: GITHUB_LFS=true but git-lfs is not installed; "
+            "skipping LFS fetch (install with: brew install git-lfs).",
+            file=sys.stderr,
+        )
+        fetch_lfs = False
+
+    # Readable code snapshots (on by default) minus dependency dirs.
+    snapshot = is_truthy(os.environ.get("SNAPSHOT", "true"))
+    excludes = parse_excludes(os.environ.get("EXCLUDE_DIRS"))
+
     timestamp = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
     base_out = os.path.abspath(os.path.expanduser(args.out))
     backup_root = os.path.join(base_out, f"github_backup_{user}_{timestamp}")
     repos_dir = os.path.join(backup_root, "repos")
     meta_dir = os.path.join(backup_root, "metadata")
+    code_dir = os.path.join(backup_root, "code")
     os.makedirs(repos_dir, exist_ok=True)
     os.makedirs(meta_dir, exist_ok=True)
+    os.makedirs(code_dir, exist_ok=True)
 
     # Pull all repos visible to the token and filter to the requested owner.
     repos = api_get_all("https://api.github.com/user/repos?per_page=100&affiliation=owner", token)
@@ -216,7 +312,11 @@ def main() -> int:
         clone_url = repo["clone_url"]
 
         mirror_path = os.path.join(repos_dir, f"{name}.git")
-        repo_mirror(clone_url, mirror_path)
+        repo_mirror(clone_url, mirror_path, fetch_lfs)
+
+        snapshot_path = os.path.join(code_dir, name)
+        if snapshot:
+            snapshot_repo(mirror_path, snapshot_path, excludes)
 
         repo_meta_dir = os.path.join(meta_dir, name)
         write_json(os.path.join(repo_meta_dir, "repo.json"), repo)
@@ -242,6 +342,7 @@ def main() -> int:
             "full_name": full_name,
             "mirror_path": mirror_path,
             "metadata_path": repo_meta_dir,
+            "snapshot_path": snapshot_path if snapshot else None,
         })
 
     write_json(os.path.join(backup_root, "manifest.json"), manifest)

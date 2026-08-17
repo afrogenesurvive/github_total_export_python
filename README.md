@@ -11,6 +11,8 @@ A Python script to create a full backup of all repositories (including metadata)
 - **Wiki support** — optionally backs up repository wikis (if they exist).
 - **Incremental** — re-run the script and existing mirror directories are updated with `git remote update --prune`.
 - **Selective backup** — back up all repos, or only the ones listed in a `config.json`.
+- **Git LFS** — optionally fetches Git LFS objects into the mirrors via `GITHUB_LFS=true`.
+- **Code snapshots** — by default exports readable working-copy files per repo, excluding `node_modules`, Python packages, and build dirs.
 - **Pagination safe** — automatically fetches all pages from the GitHub API.
 - **Manifest file** — a `manifest.json` is generated listing every backed-up repo and its location.
 
@@ -57,6 +59,9 @@ cp .env.example .env
 #   GITHUB_TOKEN=your_token_here
 #   GITHUB_USER=your_username_or_org
 #   GITHUB_REPOS=repo-a,repo-b      # optional; empty = back up all
+#   GITHUB_LFS=true                 # optional; fetches LFS objects, needs git-lfs
+#   SNAPSHOT=true                   # optional; readable code snapshot (default true)
+#   EXCLUDE_DIRS=...                # optional; dirs skipped in snapshots (defaults if unset)
 ```
 
 `.env` is git-ignored, so your token won't be committed. If both are present, an already-set environment variable (e.g. `GITHUB_TOKEN` or `GITHUB_USER`) takes precedence over `.env`.
@@ -127,6 +132,9 @@ Settings are read from the environment or an optional `.env` file:
 - `GITHUB_TOKEN` — GitHub personal access token (required)
 - `GITHUB_USER` — GitHub username or organisation to back up (used unless `--user` is passed)
 - `GITHUB_REPOS` — comma-separated list of repos to back up (empty = all)
+- `GITHUB_LFS` — set to `true` to also fetch Git LFS objects (requires `git-lfs` installed)
+- `SNAPSHOT` — set to `false` to skip the readable code snapshot (default `true`)
+- `EXCLUDE_DIRS` — comma-separated directory names to exclude from snapshots (defaults to common dependency/build dirs if unset)
 
 Repo selection comes from `GITHUB_REPOS`, or from the config JSON file (`{"repos": ["name1", "name2"]}`); `GITHUB_REPOS` wins if both are set.
 
@@ -142,6 +150,8 @@ Repo selection comes from `GITHUB_REPOS`, or from the config JSON file (`{"repos
     │   ├── repo-a.git/            # Mirror clone of repo-a
     │   ├── repo-b.git/            # Mirror clone of repo-b
     │   └── repo-a.wiki.git/       # Wiki mirror (if --include-wikis)
+    ├── code/
+    │   └── repo-a/                # Readable code snapshot (deps excluded)
     └── metadata/
         ├── repo-a/
         │   ├── repo.json          # Full repository metadata from GitHub API
@@ -199,6 +209,8 @@ git push --mirror new-origin
 - **Incremental runs**: Running the same command again updates existing mirror clones incrementally rather than re-cloning.
 - **Token scope**: Only repositories the token has access to will be backed up. Private repos require a token with the `repo` scope.
 - **Rate limiting**: The script uses an unauthenticated-like API access pattern (no `requests` library) but is authenticated via the token, giving you a higher rate limit (5 000 requests/hour).
+- **Git LFS**: Set `GITHUB_LFS=true` in `.env` to fetch LFS objects into the mirrors (`git lfs fetch --all`). Requires `git-lfs` to be installed. Without this, LFS files are stored only as small pointer files.
+- **Code snapshots & exclusions**: Each repo's current code is also exported to `code/<repo>/` as readable files (so you can browse without cloning), with common dependency/build directories excluded by default. Disable with `SNAPSHOT=false`; customise exclusions with `EXCLUDE_DIRS`. The full mirror remains for faithful restores.
 - **Organisations**: Pass the organisation name as `--user`. The script filters repos to only those owned by the specified user or org.
 
 ---
@@ -210,6 +222,7 @@ git push --mirror new-origin
 | `Missing GITHUB_TOKEN`      | Token not set in the environment                |
 | `403` or `Not Found` errors | Token lacks required scopes or is expired       |
 | No repos backed up          | Token doesn't have access, or `--user` is wrong |
+| Backup folder looks too small | Large files may be in Git LFS — set `GITHUB_LFS=true` |
 | Wiki cloning fails          | The repo has no wiki — this is silently skipped |
 
 ---
